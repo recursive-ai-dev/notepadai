@@ -99,6 +99,35 @@ class ProtocolTests(unittest.TestCase):
         body = "# Example\n```python\nprint('hello')\n```\n"
         self.assertEqual(n.parse_reply(f"<write>{body}</write>")[0], [("write", {}, body)])
 
+    def test_plain_chat_and_inline_command_examples_are_not_executed(self):
+        for reply in ("Hello! What would you like to work on?",
+                      "Use `<write>` to replace a note, or `<read/>` to read it.",
+                      'Example: `<write tab="1">new text</write>`.',
+                      'Example: ``<write>text with `backticks`</write>``.',
+                      "The <write-mode> element is ordinary text."):
+            with self.subTest(reply=reply):
+                self.assertEqual(n.parse_reply(reply), ([], reply))
+
+    def test_command_examples_do_not_swallow_later_real_commands(self):
+        for example in ("`<write>`", "```xml\n<write>\n```", "~~~\n<write>\n~~~"):
+            reply = example + "\n<write>actual note</write>Done."
+            with self.subTest(example=example):
+                self.assertEqual(n.parse_reply(reply),
+                                 ([("write", {}, "actual note")], example + "\nDone."))
+
+    def test_unmatched_inline_backtick_cannot_expose_commands_inside_a_fence(self):
+        for fence in ("```", "~~~"):
+            reply = f"An unmatched `\n{fence}xml\n` <write>example only</write>\n{fence}"
+            with self.subTest(fence=fence):
+                self.assertEqual(n.parse_reply(reply), ([], reply))
+
+    def test_markdown_in_command_bodies_cannot_hide_following_commands(self):
+        for body in ("a literal `", "```unfinished fence\n", "`<read/>` is an example"):
+            reply = f"<write>{body}</write><append>more</append>"
+            with self.subTest(body=body):
+                self.assertEqual(n.parse_reply(reply),
+                                 ([("write", {}, body), ("append", {}, "more")], ""))
+
     def test_malformed_batch_is_rejected_before_any_commands(self):
         for reply in ('<write/>', '<write>unfinished', '<write tab="1" tab="2">x</write>',
                       '<write typo="1">x</write>', '<write tab="abc">x</write>',
@@ -139,6 +168,38 @@ class ProtocolTests(unittest.TestCase):
         with patch.object(n.urllib.request, "urlopen", side_effect=error):
             with self.assertRaisesRegex(RuntimeError, r"HTTP 401: Bad key: \[redacted\]"):
                 n.chat_completion(dict(n.DEFAULTS, api_key="secret-token"), [])
+
+    def test_provider_errors_in_success_responses_keep_the_actual_message(self):
+        for error in ({"code": 503, "message": "No available provider for secret-token"},
+                      "No available provider for secret-token"):
+            for data in ({"error": error},
+                         {"choices": [{"error": error, "message": {"content": "<write>partial</write>"}}]}):
+                with self.subTest(data=data), patch.object(n.urllib.request, "urlopen",
+                        return_value=io.BytesIO(json.dumps(data).encode())):
+                    with self.assertRaisesRegex(RuntimeError, "No available provider for \\[redacted\\]") as caught:
+                        n.chat_completion(dict(n.DEFAULTS, api_key="secret-token"), [])
+                    self.assertNotIn("secret-token", str(caught.exception))
+
+    def test_failed_generation_never_returns_partial_commands(self):
+        data = {"choices": [{"finish_reason": "error", "message": {"content": "<write>partial</write>"}}]}
+        with patch.object(n.urllib.request, "urlopen", return_value=io.BytesIO(json.dumps(data).encode())):
+            with self.assertRaisesRegex(RuntimeError, "no commands were applied"):
+                n.chat_completion(n.DEFAULTS, [])
+
+    def test_http_json_errors_are_readable_and_explain_recovery(self):
+        for code, message, hint in ((429, "Rate limit exceeded", "Wait before retrying"),
+                                    (503, "No available provider", "choose another model")):
+            body = json.dumps({"error": {"code": code, "message": message}}).encode()
+            error = urllib.error.HTTPError("https://example.test", code, message, {}, io.BytesIO(body))
+            with self.subTest(code=code), patch.object(n.urllib.request, "urlopen", side_effect=error):
+                with self.assertRaisesRegex(RuntimeError, f"HTTP {code}: {message}") as caught:
+                    n.chat_completion(n.DEFAULTS, [])
+                self.assertIn(hint, str(caught.exception))
+
+    def test_model_timeout_explains_how_to_recover(self):
+        with patch.object(n.urllib.request, "urlopen", side_effect=TimeoutError("read timed out")):
+            with self.assertRaisesRegex(RuntimeError, "choose another model in AI → Settings"):
+                n.chat_completion(n.DEFAULTS, [])
 
 
 class EditorTests(unittest.TestCase):
@@ -401,6 +462,28 @@ class EditorTests(unittest.TestCase):
         self.assertIn("original", seen[1][-1]["content"])
         self.assertEqual(tab.content, "completed\n")
         self.assertIsNone(self.app.active_run)
+
+    def test_chat_with_command_examples_displays_without_edits_or_retries(self):
+        reply = 'Hello! I can edit notes with `<write>` or read them with `<read/>`.'
+        with patch.object(n, "chat_completion", return_value=reply) as provider:
+            self.app.entry.insert("1.0", "Teting")
+            self.app.send_button.invoke()
+            self.pump_until(lambda: not self.app.busy)
+        provider.assert_called_once()
+        self.assertIn("AI: " + reply, self.app.chat.get("1.0", "end"))
+        self.assertNotIn("malformed", self.app.chat.get("1.0", "end"))
+        self.assertEqual(self.app.current().content, "")
+
+    def test_malformed_batch_keeps_note_unchanged_and_can_recover_as_chat(self):
+        reply = 'Hello! What would you like to work on?'
+        with patch.object(n, "chat_completion", side_effect=['<write>bad</write><read>', reply]) as provider:
+            self.app.entry.insert("1.0", "Teting")
+            self.app.send()
+            self.pump_until(lambda: not self.app.busy)
+        self.assertEqual(provider.call_count, 2)
+        self.assertEqual(self.app.current().content, "")
+        self.assertIn("AI: " + reply, self.app.chat.get("1.0", "end"))
+        self.assertIn("Reply in plain text", provider.call_args.args[1][-1]["content"])
 
     def test_inflight_run_uses_settings_snapshot_and_stop_is_immediate(self):
         started, release = threading.Event(), threading.Event()

@@ -35,6 +35,11 @@ The app adds `/chat/completions` to the base URL; do not include it yourself.
 For a local server, use the URL and model name it provides; leave the key empty
 if that server does not require one. An AI provider is optional for ordinary editing.
 
+If chat reports a model timeout, an unavailable provider, or a rate limit, retry
+later or choose another model in **AI → Settings**. A model can remain listed even
+while its provider is offline. The chat shows provider error messages, including
+failures reported inside otherwise successful HTTP responses.
+
 Type a request in the chat box and press Enter. Shift+Enter adds a line break.
 The assistant can read, write, append, replace text, and manage tabs using command
 tags. Example requests: “Fix the spelling in this note” or “Turn this into a short checklist.”
@@ -86,7 +91,7 @@ encodings and binary files are rejected instead of being silently converted.
 Version 1 keeps the scope small: no autosave, crash recovery, or session restore.
 Save important work regularly. The AI command protocol uses XML-like tags with raw
 text bodies; literal closing command tags in generated text can be ambiguous.
-Fenced command examples are displayed without execution. Models must support
+Command examples in backticks or Markdown code fences are displayed without execution. Models must support
 ordinary text chat completions and follow this protocol; native tool calls and
 streaming are not used.
 
