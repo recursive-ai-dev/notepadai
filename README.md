@@ -27,6 +27,41 @@ Remove `applications/notepadai.desktop` and
 `icons/hicolor/scalable/apps/notepadai.svg` from that data directory to uninstall
 the launcher. Your files and settings remain in place.
 
+## Build a Debian package
+
+Build a `.deb` for Debian/Ubuntu with Python 3.10+ and `dpkg-deb` installed:
+
+```sh
+bash build-deb.sh .
+# Optional: set your package maintainer and output directory
+bash build-deb.sh . --maintainer "Your Name <you@example.com>" --out ~/Downloads
+```
+
+The builder follows `npm-to-deb.sh`'s temporary staging and verification approach.
+It packages the Python application, command launcher, desktop entry, and SVG icon;
+Debian installs `python3` and `python3-tk` as dependencies. No pip packages,
+downloads, root access, or source changes are needed to build. The package works
+across CPU architectures and uses the version declared in `notepadai.py`.
+
+Each build creates a unique directory under `desktop-packages/` in the current
+directory, containing the `.deb`, `SHA256SUMS`, and `build-info.json`. Use
+`--keep-work` to retain staging files. The builder validates the desktop entry
+when `desktop-file-validate` is available and verifies archived files and modes.
+The default maintainer uses a placeholder address; provide `--maintainer` when
+distributing the package.
+
+Install using the exact command printed by the builder:
+
+```sh
+sudo apt install /path/to/notepadai_1.0.0_all.deb
+sudo apt remove notepadai
+```
+
+The installed command is `notepadai`, and the app appears in the desktop menu.
+Removing the package leaves your notes and user settings in place. If you used
+`install.sh` previously, remove its per-user launcher and icon as described above
+so the menu uses the packaged launcher.
+
 ## Set up the AI sidekick
 
 Open **AI → Settings** and enter the base URL, model name, and API key for a
